@@ -13,6 +13,10 @@
 -----------------------------------------------------------------------------
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE ExplicitForAll #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE ExistentialQuantification #-}
 
 module Main (
     main
@@ -30,6 +34,9 @@ import Text.Printf
 import System.CPUTime
 import Data.List
 import Data.String
+import Control.Monad
+
+type TermSym = String
 
 foreach :: [a']->(a'->Bool)->Bool
 
@@ -65,23 +72,30 @@ data Term f v
     | Empty
     deriving (Eq, Ord)
 
+type STerm = Term TermSym TermSym
+
 data TermReference f v = TRef [Term f v]
+    deriving (Show, Eq, Ord)
+
+type STermReference = TermReference TermSym TermSym
 
 termRefList ref = case ref of TRef x -> x
 
 data TermElement f v = TermVar v | TermSym f
     deriving (Show, Eq, Ord)
 
-class ITerm t f v where
-    header :: t -> TermElement f v
-    subterms :: t -> [Term f v]
-    subtermRefs :: t -> [TermReference f v]
-    operands :: t -> [Term f v]
-    operandRefs :: t -> [TermReference f v]
-    term :: t-> Term f v
-    termref :: t -> TermReference f v
+type STermElement = TermElement TermSym TermSym
 
-instance ITerm (Term f v) f v where
+class ITerm t where
+    header :: t -> STermElement
+    subterms :: t -> [STerm]
+    subtermRefs :: t -> [STermReference]
+    operands :: t -> [STerm]
+    operandRefs :: t -> [STermReference]
+    term :: t-> STerm
+    termref :: t -> STermReference
+
+instance ITerm STerm where
     subterms t = case t of
         Fun f l -> t : concatMap subterms l
         _ -> [t]
@@ -99,7 +113,7 @@ instance ITerm (Term f v) f v where
     term t = t
     termref t = TRef [t]
 
-instance ITerm (TermReference f v) f v where
+instance ITerm STermReference where
     subterms (TRef (t:ts)) = subterms t
     subterms (TRef []) = []
 
@@ -141,8 +155,25 @@ instance (LogSymbol f, LogSymbol v) => Show (Term f v) where
             sumstr [a] = a
             sumstr (x:y:l) = x++","++sumstr (y:l)
 
+class IConvertible a b where
+    convert :: a -> b
 
+instance IConvertible f (Term f v) where
+    convert = Const
 
+instance IConvertible STermReference STerm where
+    convert = term
+
+-- show
+myFunction :: forall a. Ord a => [a] -> [(a, a)]
+myFunction inputList = zip sortedList nubbedList
+    where sortedList :: [a]
+          sortedList = sort inputList
+          nubbedList :: [a]
+          nubbedList = nub inputList
+
+-- /show--IConvertible x (Term f v)
+infixr 5 &
 (&) :: f -> [Term f v] -> Term f v
 (&) = Fun
 
@@ -195,7 +226,7 @@ replaceTerms x s t = case elemIndex x s of
         _ -> x
 
 repl t 0 = t
-repl t n = replaceTerms (repl t (n-1)) ['g'&[Var 'x'], Var 'y']  ['f'&[Var 'y', 'g'&[Var 'x']], 'g'&[Var 'x']]
+repl t n = replaceTerms (repl t (n-1)) ["g"&[Var "x"], Var "y"]  ["f"&[Var "y", "g"&[Var "x"]], "g"&[Var "x"]]
 
 time :: IO t -> IO t
 time a = do
@@ -228,30 +259,33 @@ hasMatch trm patt = case r of
         isMapping ((x1,y1):(x2,y2):xs) = (x1/=x2 || y1==y2) && isMapping ((x2,y2):xs)
         isMapping _ = True
 
-findMatches :: (Ord f, Ord v, Ord v1) => Term f v -> Term f v1 -> [(Term f v, [(v1, Term f v)])]
+findMatches :: STerm -> STerm -> [(STerm, [(TermSym, STerm)])]
 findMatches trm patt = concatMap m (subterms trm)
     where
         m x = case hasMatch x patt of
             Nothing -> []
             Just l -> [(x,l)]
 
-
 class ScanState st where
     level :: st -> Int
     new :: st -> Bool
 
 class Problem p where
-    premises :: p -> [Term String Int]
-    conditions :: p -> [Term String Int]
-    goals :: p -> [Term String Int]
+    premises :: p -> [STerm]
+    conditions :: p -> [STerm]
+    goals :: p -> [STerm]
 
-solvePls :: (ScanState st, Problem p) => (st, p) -> TermReference String Int-> Int -> Bool -> (st, p)
-zamenavhozhdeniya :: (ScanState st, Problem p) => st->p->TermReference String Int-> Int -> Bool->[[Term String Int]]
+solvePls :: (ScanState st, Problem p) => (st, p) -> STermReference-> Int -> Int -> Bool -> (st, p)
+zamenavhozhdeniya :: (ScanState st, Problem p) => st->p->STermReference-> Int -> Int ->STerm->[[STerm]]->(st,p)
 
+zamenavhozhdeniya s p x2 x3 x4 x5 u = (s,p)
 
-solvePls (state, x1) x2 x3 x4 x5 = case res of
-    [] -> (state, x1)
-    x:xs -> x
+internal :: TermReference f v -> Bool
+internal (TRef [a]) = True
+internal _ = False
+
+solvePls (state, x1) x2 x3 x4 x5 =
+    head (res ++ [(state,x1)])
     where
         res = do
             guard (internal x2)
@@ -264,11 +298,34 @@ solvePls (state, x1) x2 x3 x4 x5 = case res of
                     guard (x6 /= x7)
                     guard (term x6 == term x7)
                     let x8 = [term x9 | x9 <- operandRefs x2, x9/=x6, x9/=x7]
-                    return zamenavhozhdeniya st x1 x2 x3 x4 ("pls" & x8++["0"&[]]) [["priem"&[], "pls"&[], "list"&["1"&[],"2"&[]], "secondsubterm"&[]]]
+                    let u = [["priem"&[], "pls"&[], "list"&["1"&[],"2"&[]], "secondsubterm"&[]]]
+                    return (zamenavhozhdeniya state x1 x2 x3 x4 ("pls" & (x8++["0"&[]])) u)
+            ++
+            do
+                x6 <- operandRefs x2
+                do
+                    x7 <- operandRefs x2
+                    guard (x6 /= x7)
+                    guard (term x6 == term x7)
+                    let x8 = [term x9 | x9 <- operandRefs x2, x9/=x6, x9/=x7]
+                    let u = [["priem"&[], "pls"&[], "list"&["1"&[],"2"&[]], "secondsubterm"&[]]]
+                    return (zamenavhozhdeniya state x1 x2 x3 x4 ("pls" & (x8++["0"&[]])) u)
+
+
+test n =
+    do
+        x1 <- [1..n]
+        return (x1*x1)
+    ++
+    do
+        x1 <- [1..n]
+        return (x1^3)
+
 
 main = do
-    time (print $ lengthf (repl ('f'&[Var 'y', 'g'&[Var 'x']]) 25))
-    print $ findMatches (repl ('f'&[Var 'y', 'g'&[Var 'x']]) 3) (repl ('f'&[Var 'y', 'g'&[Var 'x']]) 1)
+    print $ test 10
+    time (print $ lengthf (repl ("f"&[Var "y", "g"&[Var "x"]]) 15))
+    print $ findMatches (repl ("f"&[Var "y", "g"&[Var "x"]]) 3) (repl ("f"&[Var "y", "g"&[Var "x"]]) 1)
     --start <- currentTime
     --print $ toStr (replaceTerms (Fun "f" [Var "x", Fun "g" [Var "x"]]) [(Fun "g" [Var "x"])] [(Fun "h" [Var "y"])])
     --time (print (take 100 twinpair))
